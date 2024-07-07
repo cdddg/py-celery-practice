@@ -1,16 +1,16 @@
-# 改善 Celery 分散式任務日誌的追蹤性
+# 改善 Celery 分散式任務日誌的可追溯性
 
 這篇紀錄旨在探討如何提升 Celery 日誌的可追蹤性和閱讀性，讓管理和調試過程更為高效。
 
-## 1. 識別日誌追蹤的挑戰
+## 1. 辨識日誌追蹤的挑戰
 
 在面對原始的 Celery 日誌時，我們遇到了幾個主要的挑戰：
 
 - **任務追蹤困難**：從大量日誌中快速識別特定任務的日誌變得困難。
-- **缺乏清晰的上下文連結**：日誌條目間的關聯不夠明確，追蹤不同任務之間的依賴和觸發變得相當頭痛。
-- **日誌冗長**：大量重複的信息和缺乏重點的日誌增加了閱讀和分析的難度。
+- **缺乏清晰的上下文連結**：日誌條目間的關聯不夠明確，追蹤不同任務之間的依賴和觸發變得相當麻煩。
+- **日誌冗長**：大量重複的訊息和缺乏重點的日誌增加了閱讀和分析的難度。
 
-### 原始日誌範例
+#### 原始日誌範例
 
 ```
 [2023-12-30 10:46:38,196: INFO/MainProcess] project: Sending due task test-nested-job (project.task.first_task)
@@ -45,9 +45,9 @@
 
 ## 2. 初步優化：使用 asgi-correlation-id
 
-為了解決這些問題，我們加入了一個叫做 [asgi-correlation-id](https://github.com/snok/asgi-correlation-id) 的 package，它能為每個任務產生一個獨特的識別碼，這樣一來，追蹤日誌就清楚多了。
+為了解決這些問題，我們加入了一個叫做 [asgi-correlation-id](https://github.com/snok/asgi-correlation-id) 的套件，它能為每個任務產生一個獨特的識別碼 (correlation ID)。
 
-### 解決方案的具體實施
+#### 解決方案的具體實施
 
 ```diff
 # 在 project.main.py 中
@@ -66,7 +66,7 @@
 +     logger.addHandler(handler)
 ```
 
-### 優化後的日誌
+#### 優化後的日誌
 
 ```
    correlation-id          current-id
@@ -106,7 +106,7 @@ INFO [95382411] [5995d3e8] [f1dbfa52] celery.app.trace       | Task project.task
 
 ### 3-1. Scheduler 發送任務日誌
 
-在 Celery 的 `Scheduler` 類別中，`apply_entry` 函數在任務非同步執行之前進行日誌記錄。在這個時間點，`asgi_correlation_id.correlation_id` 和 `asgi_correlation_id.celery_current_id` 還未設置，導致日誌缺少關鍵的上下文信息，使得追蹤和調試任務變得困難。
+在 Celery 的 `Scheduler` 類別中，`apply_entry` 函數在任務非同步 (asynchronous) 執行之前進行日誌記錄。在這個時間點，`asgi_correlation_id.correlation_id` 和 `asgi_correlation_id.celery_current_id` 還未設置，導致日誌缺少關鍵的上下文訊息，使得追蹤和除錯任務變得困難。
 
 ```python
 class Scheduler:
@@ -120,7 +120,7 @@ class Scheduler:
 
 ### 3-2. Celery Worker 處理接收任務日誌
 
-在 Celery 的 `celery.worker.strategy.py` 的 `default` 函數中，`LOG_RECEIVED` 日誌記錄後才發出 `task_received` 信號。這導致日誌輸出與信號
+在 Celery 的 `celery.worker.strategy.py` 中，`default` 函數在 `LOG_RECEIVED` 日誌記錄後才發出 `task_received` 訊號。這導致日誌輸出與訊號不一致。
 
 ```python
 def default(task, app, consumer,
@@ -146,7 +146,7 @@ def default(task, app, consumer,
 
 為了解決上述問題，我們採取了兩種策略：
 
-1. **忽略接收日誌**：透過自定義的日誌過濾器，忽略那些缺乏關鍵上下文信息的日誌條目。這樣做的目的是為了減少冗餘信息，並集中關注於重要的日誌記錄。
+1. **忽略接收日誌**：透過自定義的日誌過濾器 (filter)，忽略那些缺乏關鍵上下文訊息的日誌條目。這樣做的目的是為了減少冗餘訊息，並集中關注於重要的日誌記錄。
 
 ```diff
 + class IgnoreSpecificLogFilter(logging.Filter):
@@ -163,7 +163,7 @@ def default(task, app, consumer,
       ...
 ```
 
-2. **重寫接收日誌**：在關鍵時刻重寫日誌，確保如 `correlation_id` 和 `celery_current_id` 等重要信息被及時記錄。這種做法提升了日誌的完整性，有助於更有效地追蹤任務。
+2. **重寫接收日誌**：在關鍵時刻重寫日誌，確保如 `correlation_id` 和 `celery_current_id` 等重要訊息被及時記錄。這種做法提升了日誌的完整性，有助於更有效地追蹤任務。
 
 ```diff
 + @before_task_publish.connect(weak=False)
@@ -181,7 +181,7 @@ def default(task, app, consumer,
 +     getLogger(__name__).info(LOG_RECEIVED % {'name': task.name,'id': task.request.id} + ' in @task_prerun')
 ```
 
-### 調整後的日誌
+#### 調整後的日誌
 
 ```diff
 + INFO [95382411] [????????] [????????] project.celerylogging  | Scheduler: Sending due task test-nested-job (project.task.first_task) in @before_task_publish
